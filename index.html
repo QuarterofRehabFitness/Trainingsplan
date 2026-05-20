@@ -270,6 +270,7 @@ async function save(key, val) {
 
 // Cloud sync - speichert in Supabase und localStorage (Backup)
 async function syncToCloud(table, items, prevItems) {
+  window.__qrSaving = true;
   try {
     // Find deleted items
     const prevIds = (prevItems || []).map(x => x.id);
@@ -297,6 +298,9 @@ async function syncToCloud(table, items, prevItems) {
     }
   } catch (e) {
     console.warn("Cloud sync failed (saved locally):", e);
+  } finally {
+    // Keep flag set for 3 more seconds to avoid race conditions
+    setTimeout(() => { window.__qrSaving = false; }, 3000);
   }
 }
 
@@ -342,23 +346,39 @@ function App() {
     })();
     // Auto-refresh every 10 seconds so patient sees therapist's changes
     const intv = setInterval(async () => {
+      // Skip refresh entirely if user is actively interacting or saving
+      if (window.__qrSaving) return;
+      if (window.__qrLogModalOpen) return;
       try {
-        const [ex, pa, th, pl, lo, gr] = await Promise.all([
+        const [ex, pa, th, pl, gr] = await Promise.all([
           window.db.getExercises(),
           window.db.getPatients(),
           window.db.getTherapists(),
           window.db.getPlans(),
-          window.db.getLogs(),
           window.db.getGroups().catch(() => [])
         ]);
+        if (window.__qrSaving) return;
+        if (window.__qrLogModalOpen) return;
+        // Only update items the user isn't actively modifying
         if (ex) setExercises(ex);
         if (pa) setPatients(pa);
         if (th) setTherapists(th);
         if (pl) setPlans(pl);
-        if (lo) setLogs(lo);
         if (gr) setGroups(gr);
+        // Logs: MERGE only - never overwrite local
+        try {
+          const cloudLogs = await window.db.getLogs();
+          if (cloudLogs) {
+            setLogs(prev => {
+              const localIds = new Set(prev.map(x => x.id));
+              const newFromCloud = cloudLogs.filter(x => !localIds.has(x.id));
+              if (newFromCloud.length === 0) return prev;
+              return [...prev, ...newFromCloud];
+            });
+          }
+        } catch {}
       } catch {}
-    }, 10000);
+    }, 20000);
     return () => clearInterval(intv);
   }, []);
 
@@ -557,8 +577,8 @@ function TeamManager({ therapists, setTherapists }) {
             <Input placeholder="Rolle (z.B. Physiotherapeut)" value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value }))} />
           </div>
           <div style={{ marginTop: 10 }}>
-            <Input placeholder="PIN (4 Ziffern)" value={form.pin}
-              onChange={e => { setForm(f => ({ ...f, pin: e.target.value.replace(/\D/g, "").slice(0, 4) })); setPinError(""); }} />
+            <Input placeholder="Sozialversicherungsnummer (10 Ziffern, NNNNTTMMJJ)" value={form.pin}
+              onChange={e => { setForm(f => ({ ...f, pin: e.target.value.replace(/\D/g, "").slice(0, 10) })); setPinError(""); }} />
             {pinError && <div style={{ fontSize: 11, color: "#d94f4f", marginTop: 4 }}>{pinError}</div>}
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
@@ -811,8 +831,8 @@ function PatientManager({ patients, setPatients, logs, plans, exercises }) {
 
   function savePatient() {
     if (!form.name.trim()) return;
-    if (!/^\d{4}$/.test(form.pin)) { setPinError("PIN muss genau 4 Ziffern sein"); return; }
-    if (patients.find(p => p.pin === form.pin && p.id !== editId)) { setPinError("Dieser PIN ist bereits vergeben"); return; }
+    if (!/^\d{10}$/.test(form.pin)) { setPinError("Code muss genau 10 Ziffern sein (Sozialversicherungsnummer)"); return; }
+    if (patients.find(p => p.pin === form.pin && p.id !== editId)) { setPinError("Dieser Code ist bereits vergeben"); return; }
     if (editId) {
       setPatients(prev => prev.map(p => p.id === editId ? { ...p, ...form } : p));
       setEditId(null);
@@ -846,8 +866,8 @@ function PatientManager({ patients, setPatients, logs, plans, exercises }) {
           </div>
           <Input placeholder="Diagnose" value={form.diagnosis} onChange={e => setForm(f => ({ ...f, diagnosis: e.target.value }))} style={{ marginTop: 10 }} />
           <div style={{ marginTop: 10 }}>
-            <Input placeholder="PIN (4 Ziffern)" value={form.pin}
-              onChange={e => { setForm(f => ({ ...f, pin: e.target.value.replace(/\D/g, "").slice(0, 4) })); setPinError(""); }} />
+            <Input placeholder="Sozialversicherungsnummer (10 Ziffern, NNNNTTMMJJ)" value={form.pin}
+              onChange={e => { setForm(f => ({ ...f, pin: e.target.value.replace(/\D/g, "").slice(0, 10) })); setPinError(""); }} />
             {pinError && <div style={{ fontSize: 11, color: "#d94f4f", marginTop: 4 }}>{pinError}</div>}
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
@@ -872,7 +892,7 @@ function PatientManager({ patients, setPatients, logs, plans, exercises }) {
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }} onClick={e => e.stopPropagation()}>
                   <div style={{ textAlign: "right" }}>
                     <div style={{ fontSize: 12, color: GRAY }}>{pPlans.length} Plan(e) · {pLogs.length} Sets</div>
-                    <div style={{ fontSize: 11, color: GRAY }}>PIN: <span style={{ fontWeight: 800, color: "white", letterSpacing: 4 }}>{p.pin || "—"}</span></div>
+                    <div style={{ fontSize: 11, color: GRAY }}>SVN: <span style={{ fontWeight: 800, color: "white", letterSpacing: 2, fontSize: 12 }}>{p.pin || "—"}</span></div>
                   </div>
                   <SmallBtn onClick={() => startEdit(p)}>✎</SmallBtn>
                   <SmallBtn onClick={() => deletePatient(p.id)}>✕</SmallBtn>
@@ -923,6 +943,7 @@ function PlanBuilder({ exercises, patients, plans, setPlans }) {
   const [form, setForm] = useState({ patientId: patients[0]?.id || "", title: "", phases: DEFAULT_PHASES() });
   const [activePhaseId, setActivePhaseId] = useState(null);
   const [pickingFor, setPickingFor] = useState(null);
+  const [search, setSearch] = useState("");
 
   function initForm(base) {
     const f = base || { patientId: patients[0]?.id || "", title: "", phases: DEFAULT_PHASES() };
@@ -943,7 +964,7 @@ function PlanBuilder({ exercises, patients, plans, setPlans }) {
       if (p.id !== phaseId) return p;
       const exists = p.items.find(i => i.exerciseId === exId);
       if (exists) return { ...p, items: p.items.filter(i => i.exerciseId !== exId) };
-      return { ...p, items: [...p.items, { exerciseId: exId, sets: 3, mode: "reps", reps: "8-12", duration: "30", frequency: "3x/Woche" }] };
+      return { ...p, items: [...p.items, { exerciseId: exId, sets: 3, mode: "reps", reps: "8-12", duration: "30", weight: "", frequency: "3x/Woche" }] };
     })}));
   }
   function updateItem(phaseId, exId, field, val) {
@@ -1019,6 +1040,7 @@ function PlanBuilder({ exercises, patients, plans, setPlans }) {
                         ) : (
                           <label style={{ fontSize: 11, color: GRAY }}>Zeit (Sek.)<br /><SmallInput value={item.duration || ""} onChange={e => updateItem(activePhase.id, item.exerciseId, "duration", e.target.value)} style={{ width: 80 }} /></label>
                         )}
+                        <label style={{ fontSize: 11, color: GRAY }}>Gewicht (kg)<br /><SmallInput value={item.weight || ""} onChange={e => updateItem(activePhase.id, item.exerciseId, "weight", e.target.value)} placeholder="optional" style={{ width: 80 }} /></label>
                         <label style={{ fontSize: 11, color: GRAY }}>Frequenz<br /><SmallInput value={item.frequency} onChange={e => updateItem(activePhase.id, item.exerciseId, "frequency", e.target.value)} style={{ width: 90 }} /></label>
                         <SmallBtn onClick={() => removeItem(activePhase.id, item.exerciseId)}>✕</SmallBtn>
                       </div>
@@ -1047,8 +1069,16 @@ function PlanBuilder({ exercises, patients, plans, setPlans }) {
           </div>
         </Card>
       )}
+      {plans.length > 3 && (
+        <Input placeholder="Suchen nach Patient oder Plantitel…" value={search} onChange={e => setSearch(e.target.value)} style={{ marginBottom: 14 }} />
+      )}
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {plans.map(plan => {
+        {plans.filter(plan => {
+          if (!search.trim()) return true;
+          const patient = patients.find(p => p.id === plan.patientId);
+          const q = search.toLowerCase();
+          return (plan.title || "").toLowerCase().includes(q) || (patient?.name || "").toLowerCase().includes(q);
+        }).map(plan => {
           const patient = patients.find(p => p.id === plan.patientId);
           const phases = plan.phases || [];
           const total = phases.reduce((a, p) => a + p.items.length, 0);
@@ -1137,6 +1167,7 @@ function PatientDashboard({ patient, myPlans, exercises, logs, setLogs, onBack }
   const [logModal, setLogModal] = useState(null); // { planId, phaseId, exerciseId, item }
 
   function openLog(planId, phaseId, exerciseId, item) {
+    window.__qrLogModalOpen = true;
     setLogModal({ planId, phaseId, exerciseId, item });
   }
   function saveSetLog(data) {
@@ -1157,6 +1188,7 @@ function PatientDashboard({ patient, myPlans, exercises, logs, setLogs, onBack }
       mode: data.mode
     }]);
     setLogModal(null);
+    setTimeout(() => { window.__qrLogModalOpen = false; }, 5000);
   }
   function undoLast(planId, exerciseId) {
     setLogs(prev => {
@@ -1216,7 +1248,7 @@ function PatientDashboard({ patient, myPlans, exercises, logs, setLogs, onBack }
         )}
         {tab === "log" && <LogHistory logs={logs} exercises={exercises} />}
       </div>
-      {logModal && <SetLogModal item={logModal.item} ex={exercises.find(e => e.id === logModal.exerciseId)} onSave={saveSetLog} onCancel={() => setLogModal(null)} />}
+      {logModal && <SetLogModal item={logModal.item} ex={exercises.find(e => e.id === logModal.exerciseId)} onSave={saveSetLog} onCancel={() => { setLogModal(null); window.__qrLogModalOpen = false; }} />}
     </div>
   );
 }
@@ -1234,7 +1266,7 @@ function ExerciseLogCard({ ex, item, doneSets, onLog, onUndo, phaseColor }) {
           <div style={{ fontWeight: 700, fontSize: 16, display: "flex", alignItems: "center", gap: 8 }}>
             {done && <span style={{ color }}>✓</span>}{ex.name}
           </div>
-          <div style={{ fontSize: 12, color: GRAY, marginTop: 3 }}>{item.sets} Sätze · {(item.mode || "reps") === "time" ? `${item.duration || "—"} Sek.` : `${item.reps || "—"} Wdh.`} · {item.frequency}</div>
+          <div style={{ fontSize: 12, color: GRAY, marginTop: 3 }}>{item.sets} Sätze · {(item.mode || "reps") === "time" ? `${item.duration || "—"} Sek.` : `${item.reps || "—"} Wdh.`}{item.weight ? ` · ${item.weight} kg` : ""} · {item.frequency}</div>
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           {ex.videoUrl && <SmallBtn onClick={() => setVideoOpen(o => !o)}>{videoOpen ? "▲" : "▶"}</SmallBtn>}
@@ -1399,7 +1431,7 @@ function SetLogModal({ item, ex, onSave, onCancel }) {
   const mode = item?.mode || "reps";
   const [reps, setReps] = useState("");
   const [duration, setDuration] = useState("");
-  const [weight, setWeight] = useState("");
+  const [weight, setWeight] = useState(item?.weight || "");
   const [rpe, setRpe] = useState(7);
   const [note, setNote] = useState("");
 
@@ -1412,7 +1444,7 @@ function SetLogModal({ item, ex, onSave, onCancel }) {
       <div onClick={e => e.stopPropagation()} style={{ background: CARD, borderRadius: 16, padding: 24, maxWidth: 440, width: "100%", border: `1px solid ${BORDER}`, maxHeight: "90vh", overflowY: "auto" }}>
         <div style={{ fontSize: 11, color: GRAY, letterSpacing: 2, textTransform: "uppercase", marginBottom: 4 }}>Set dokumentieren</div>
         <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4, color: "white" }}>{ex?.name || "Übung"}</div>
-        <div style={{ fontSize: 12, color: GRAY, marginBottom: 18 }}>Vorgabe: {mode === "time" ? `${item?.duration || "—"} Sek.` : `${item?.reps || "—"} Wdh.`}</div>
+        <div style={{ fontSize: 12, color: GRAY, marginBottom: 18 }}>Vorgabe: {mode === "time" ? `${item?.duration || "—"} Sek.` : `${item?.reps || "—"} Wdh.`}{item?.weight ? ` · ${item.weight} kg` : ""}</div>
 
         {mode === "reps" ? (
           <div style={{ marginBottom: 14 }}>
