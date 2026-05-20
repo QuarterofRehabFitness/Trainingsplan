@@ -109,7 +109,18 @@
         return rows.map(r => ({ id: r.id, patientId: r.patient_id, exerciseId: r.exercise_id, sets: r.sets, date: r.date, reps: r.reps, duration: r.duration, weight: r.weight, rpe: r.rpe, note: r.note, mode: r.mode, ts: r.ts || (r.created_at ? new Date(r.created_at).getTime() : Date.now()) }));
       },
       async upsertLog(l) {
-        const dbRow = { id: l.id, patient_id: l.patientId, exercise_id: l.exerciseId, sets: l.sets, date: l.date, reps: l.reps || null, duration: l.duration || null, weight: l.weight || null, rpe: l.rpe || null, note: l.note || null, mode: l.mode || null };
+        const dbRow = { 
+          id: l.id, 
+          patient_id: l.patientId, 
+          exercise_id: l.exerciseId, 
+          date: l.date || null,
+          reps: l.reps || null, 
+          duration: l.duration || null, 
+          weight: l.weight || null, 
+          rpe: l.rpe ? parseInt(l.rpe) : null, 
+          note: l.note || null, 
+          mode: l.mode || null 
+        };
         return await sbFetch("logs?on_conflict=id", {
           method: "POST",
           headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
@@ -1199,9 +1210,11 @@ function PatientDashboard({ patient, myPlans, exercises, logs, setLogs, onBack }
     // Save directly to cloud (await to make sure it's stored)
     window.__qrSaving = true;
     try {
-      await window.db.upsertLog(newLog);
+      const result = await window.db.upsertLog(newLog);
+      console.log("Set saved to cloud:", result);
     } catch (e) {
-      console.warn("Cloud save failed (kept locally):", e);
+      console.error("CLOUD SAVE FAILED:", e);
+      alert("Achtung: Set konnte nicht in der Cloud gespeichert werden. Bitte Internet prüfen.\n\nFehler: " + e.message);
     }
     setTimeout(() => { window.__qrSaving = false; window.__qrLogModalOpen = false; }, 2000);
   }
