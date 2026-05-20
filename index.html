@@ -327,12 +327,22 @@ function App() {
           window.db.getLogs(),
           window.db.getGroups().catch(() => [])
         ]);
+        // Load local backup too
+        const localLogs = (await load("qr_logs")) || [];
+        // Merge: combine cloud logs + local logs (local wins on duplicate IDs)
+        const cloudIds = new Set((lo || []).map(x => x.id));
+        const localOnly = localLogs.filter(x => !cloudIds.has(x.id));
+        const mergedLogs = [...(lo || []), ...localOnly];
+        // Re-upload any local-only logs so they don't get lost
+        for (const log of localOnly) {
+          try { await window.db.upsertLog(log); } catch {}
+        }
         // If cloud has data, use it. Otherwise seed.
         if (ex && ex.length > 0) setExercises(ex); else { setExercises(SEED_EXERCISES); for (const e of SEED_EXERCISES) await window.db.upsertExercise(e); }
         if (pa && pa.length > 0) setPatients(pa); else { setPatients(SEED_PATIENTS); for (const p of SEED_PATIENTS) await window.db.upsertPatient(p); }
         if (th && th.length > 0) setTherapists(th); else { setTherapists(SEED_THERAPISTS); for (const t of SEED_THERAPISTS) await window.db.upsertTherapist(t); }
         setPlans(pl || []);
-        setLogs(lo || []);
+        setLogs(mergedLogs);
         setGroups(gr || []);
       } catch (e) {
         console.warn("Cloud load failed, using local:", e);
@@ -1111,23 +1121,19 @@ function PlanBuilder({ exercises, patients, plans, setPlans }) {
 
 function PatientApp({ onBack, patients, exercises, plans, logs, setLogs }) {
   const [patientId, setPatientId] = useState(null);
-  const [pin, setPin] = useState(["", "", "", ""]);
+  const [pin, setPin] = useState("");
   const [error, setError] = useState(false);
   const [shake, setShake] = useState(false);
-  const r0 = useRef(null); const r1 = useRef(null); const r2 = useRef(null); const r3 = useRef(null);
-  const refs = [r0, r1, r2, r3];
 
-  function handleDigit(idx, val) {
-    if (!/^\d?$/.test(val)) return;
-    const next = [...pin]; next[idx] = val; setPin(next); setError(false);
-    if (val && idx < 3) refs[idx + 1].current?.focus();
-    if (next.every(d => d !== "")) {
-      const match = patients.find(p => p.pin === next.join(""));
+  function handleChange(val) {
+    const clean = val.replace(/\D/g, "").slice(0, 10);
+    setPin(clean); setError(false);
+    if (clean.length === 10) {
+      const match = patients.find(p => p.pin === clean);
       if (match) { setPatientId(match.id); }
-      else { setError(true); setShake(true); setTimeout(() => { setShake(false); setPin(["","","",""]); refs[0].current?.focus(); }, 600); }
+      else { setError(true); setShake(true); setTimeout(() => { setShake(false); setPin(""); }, 700); }
     }
   }
-  function handleKeyDown(idx, e) { if (e.key === "Backspace" && !pin[idx] && idx > 0) refs[idx - 1].current?.focus(); }
 
   if (!patientId) return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
@@ -1135,16 +1141,16 @@ function PatientApp({ onBack, patients, exercises, plans, logs, setLogs }) {
       <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 32, animation: "fadeIn .4s ease" }}>
         <QuarterLogo height={56} />
         <div style={{ marginTop: 40, fontWeight: 800, fontSize: 24, marginBottom: 8 }}>Willkommen</div>
-        <div style={{ fontSize: 13, color: GRAY, marginBottom: 48, textAlign: "center", maxWidth: 260, lineHeight: 1.8 }}>Bitte gib deinen persönlichen<br />4-stelligen PIN-Code ein</div>
-        <div style={{ display: "flex", gap: 16, animation: shake ? "shake .5s ease" : "none" }}>
-          {pin.map((digit, i) => (
-            <input key={i} ref={refs[i]} type="password" inputMode="numeric" maxLength={1} value={digit}
-              onChange={e => handleDigit(i, e.target.value)} onKeyDown={e => handleKeyDown(i, e)} autoFocus={i === 0}
-              style={{ width: 64, height: 76, textAlign: "center", fontSize: 30, fontWeight: 800, background: error ? "#1e0909" : CARD, border: `2px solid ${error ? "#d94f4f" : digit ? ACCENT : BORDER}`, borderRadius: 14, color: error ? "#d94f4f" : "white", outline: "none", transition: "all .2s", caretColor: "transparent" }} />
-          ))}
+        <div style={{ fontSize: 13, color: GRAY, marginBottom: 36, textAlign: "center", maxWidth: 320, lineHeight: 1.8 }}>Bitte gib deine Sozialversicherungsnummer ein<br /><span style={{ fontSize: 11, opacity: .7 }}>10 Ziffern · NNNNTTMMJJ</span></div>
+        <div style={{ animation: shake ? "shake .5s ease" : "none", width: "100%", maxWidth: 360 }}>
+          <input type="tel" inputMode="numeric" autoFocus value={pin} maxLength={10}
+            onChange={e => handleChange(e.target.value)}
+            placeholder="1234140392"
+            style={{ width: "100%", height: 64, textAlign: "center", fontSize: 22, fontWeight: 700, letterSpacing: 4, background: error ? "#1e0909" : CARD, border: `2px solid ${error ? "#d94f4f" : pin ? ACCENT : BORDER}`, borderRadius: 14, color: error ? "#d94f4f" : "white", outline: "none", transition: "all .2s", padding: "0 16px" }} />
+          <div style={{ marginTop: 10, fontSize: 11, color: GRAY, textAlign: "center", letterSpacing: 2 }}>{pin.length} / 10</div>
         </div>
-        {error && <div style={{ marginTop: 20, color: "#d94f4f", fontSize: 13 }}>✕ Falscher PIN — bitte erneut versuchen</div>}
-        <div style={{ marginTop: 56, fontSize: 11, color: GRAY, textAlign: "center", lineHeight: 1.9 }}>Deinen persönlichen PIN erhältst du<br />von deinem Therapeuten bei Quarter.</div>
+        {error && <div style={{ marginTop: 20, color: "#d94f4f", fontSize: 13 }}>✕ Nicht erkannt — bitte erneut versuchen</div>}
+        <div style={{ marginTop: 56, fontSize: 11, color: GRAY, textAlign: "center", lineHeight: 1.9 }}>Deine Sozialversicherungsnummer erhältst du<br />von deinem Therapeuten bei Quarter.</div>
       </div>
     </div>
   );
@@ -1153,7 +1159,7 @@ function PatientApp({ onBack, patients, exercises, plans, logs, setLogs }) {
   const myPlans = plans.filter(pl => pl.patientId === patientId);
   const myLogs = logs.filter(l => l.patientId === patientId);
   return <PatientDashboard patient={patient} myPlans={myPlans} exercises={exercises} logs={myLogs} setLogs={setLogs}
-    onBack={() => { setPatientId(null); setPin(["","","",""]); setError(false); }} />;
+    onBack={() => { setPatientId(null); setPin(""); setError(false); }} />;
 }
 
 function PatientDashboard({ patient, myPlans, exercises, logs, setLogs, onBack }) {
@@ -1170,9 +1176,9 @@ function PatientDashboard({ patient, myPlans, exercises, logs, setLogs, onBack }
     window.__qrLogModalOpen = true;
     setLogModal({ planId, phaseId, exerciseId, item });
   }
-  function saveSetLog(data) {
+  async function saveSetLog(data) {
     if (!logModal) return;
-    setLogs(prev => [...prev, {
+    const newLog = {
       id: "log" + uid(),
       planId: logModal.planId,
       phaseId: logModal.phaseId,
@@ -1183,12 +1189,21 @@ function PatientDashboard({ patient, myPlans, exercises, logs, setLogs, onBack }
       reps: data.reps,
       duration: data.duration,
       weight: data.weight,
-      rpe: data.rpe,
+      rpe: data.rpe ? parseInt(data.rpe) : null,
       note: data.note,
       mode: data.mode
-    }]);
+    };
+    // Update state immediately
+    setLogs(prev => [...prev, newLog]);
     setLogModal(null);
-    setTimeout(() => { window.__qrLogModalOpen = false; }, 5000);
+    // Save directly to cloud (await to make sure it's stored)
+    window.__qrSaving = true;
+    try {
+      await window.db.upsertLog(newLog);
+    } catch (e) {
+      console.warn("Cloud save failed (kept locally):", e);
+    }
+    setTimeout(() => { window.__qrSaving = false; window.__qrLogModalOpen = false; }, 2000);
   }
   function undoLast(planId, exerciseId) {
     setLogs(prev => {
