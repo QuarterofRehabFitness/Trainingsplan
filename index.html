@@ -18,23 +18,129 @@
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
 
-    // Storage using localStorage
+    // ── Supabase Configuration ────────────────────────────────────────────
+    const SUPABASE_URL = "https://dlgwswumjcvujlseghhl.supabase.co";
+    const SUPABASE_KEY = "sb_publishable_1SCUE3HFvXjq7VPqHE8y6Q_lXVArBOO";
+
+    // Supabase REST helper
+    async function sbFetch(path, opts = {}) {
+      const url = SUPABASE_URL + "/rest/v1/" + path;
+      const headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": "Bearer " + SUPABASE_KEY,
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+        ...(opts.headers || {})
+      };
+      const res = await fetch(url, { ...opts, headers });
+      if (!res.ok) {
+        const text = await res.text();
+        console.error("Supabase error:", res.status, text);
+        throw new Error("Supabase " + res.status);
+      }
+      if (res.status === 204) return null;
+      return await res.json();
+    }
+
+    window.db = {
+      // Therapists
+      async getTherapists() {
+        return await sbFetch("therapists?select=*");
+      },
+      async upsertTherapist(t) {
+        return await sbFetch("therapists?on_conflict=id", {
+          method: "POST",
+          headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
+          body: JSON.stringify(t)
+        });
+      },
+      async deleteTherapist(id) {
+        return await sbFetch("therapists?id=eq." + encodeURIComponent(id), { method: "DELETE" });
+      },
+      // Patients
+      async getPatients() {
+        return await sbFetch("patients?select=*");
+      },
+      async upsertPatient(p) {
+        return await sbFetch("patients?on_conflict=id", {
+          method: "POST",
+          headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
+          body: JSON.stringify(p)
+        });
+      },
+      async deletePatient(id) {
+        return await sbFetch("patients?id=eq." + encodeURIComponent(id), { method: "DELETE" });
+      },
+      // Exercises
+      async getExercises() {
+        const rows = await sbFetch("exercises?select=*");
+        return rows.map(r => ({ id: r.id, name: r.name, category: r.category, videoUrl: r.video_url, description: r.description }));
+      },
+      async upsertExercise(e) {
+        const dbRow = { id: e.id, name: e.name, category: e.category, video_url: e.videoUrl, description: e.description };
+        return await sbFetch("exercises?on_conflict=id", {
+          method: "POST",
+          headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
+          body: JSON.stringify(dbRow)
+        });
+      },
+      async deleteExercise(id) {
+        return await sbFetch("exercises?id=eq." + encodeURIComponent(id), { method: "DELETE" });
+      },
+      // Plans
+      async getPlans() {
+        const rows = await sbFetch("plans?select=*");
+        return rows.map(r => ({ id: r.id, patientId: r.patient_id, name: r.name, phases: r.phases }));
+      },
+      async upsertPlan(p) {
+        const dbRow = { id: p.id, patient_id: p.patientId, name: p.name, phases: p.phases };
+        return await sbFetch("plans?on_conflict=id", {
+          method: "POST",
+          headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
+          body: JSON.stringify(dbRow)
+        });
+      },
+      async deletePlan(id) {
+        return await sbFetch("plans?id=eq." + encodeURIComponent(id), { method: "DELETE" });
+      },
+      // Logs
+      async getLogs() {
+        const rows = await sbFetch("logs?select=*");
+        return rows.map(r => ({ id: r.id, patientId: r.patient_id, exerciseId: r.exercise_id, sets: r.sets, date: r.date, reps: r.reps, duration: r.duration, weight: r.weight, rpe: r.rpe, note: r.note, mode: r.mode, ts: r.ts || (r.created_at ? new Date(r.created_at).getTime() : Date.now()) }));
+      },
+      async upsertLog(l) {
+        const dbRow = { id: l.id, patient_id: l.patientId, exercise_id: l.exerciseId, sets: l.sets, date: l.date, reps: l.reps || null, duration: l.duration || null, weight: l.weight || null, rpe: l.rpe || null, note: l.note || null, mode: l.mode || null };
+        return await sbFetch("logs?on_conflict=id", {
+          method: "POST",
+          headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
+          body: JSON.stringify(dbRow)
+        });
+      },
+      async deleteLog(id) {
+        return await sbFetch("logs?id=eq." + encodeURIComponent(id), { method: "DELETE" });
+      },
+      // Groups
+      async getGroups() {
+        const rows = await sbFetch("exercise_groups?select=*");
+        return rows.map(r => ({ id: r.id, name: r.name, levels: r.levels || [] }));
+      },
+      async upsertGroup(g) {
+        return await sbFetch("exercise_groups?on_conflict=id", {
+          method: "POST",
+          headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
+          body: JSON.stringify({ id: g.id, name: g.name, levels: g.levels })
+        });
+      },
+      async deleteGroup(id) {
+        return await sbFetch("exercise_groups?id=eq." + encodeURIComponent(id), { method: "DELETE" });
+      }
+    };
+
+    // Fallback localStorage (für Offline)
     window.storage = {
-      get: async (key) => {
-        try {
-          const val = localStorage.getItem(key);
-          if (val) return { key, value: val };
-        } catch {}
-        return null;
-      },
-      set: async (key, value) => {
-        try { localStorage.setItem(key, value); } catch {}
-        return { key, value };
-      },
-      delete: async (key) => {
-        try { localStorage.removeItem(key); } catch {}
-        return { key, deleted: true };
-      },
+      get: async (key) => { try { const v = localStorage.getItem(key); if (v) return { key, value: v }; } catch {} return null; },
+      set: async (key, value) => { try { localStorage.setItem(key, value); } catch {} return { key, value }; },
+      delete: async (key) => { try { localStorage.removeItem(key); } catch {} return { key, deleted: true }; },
       list: async () => ({ keys: [] })
     };
 
@@ -162,6 +268,38 @@ async function save(key, val) {
   try { await window.storage.set(key, JSON.stringify(val)); } catch {}
 }
 
+// Cloud sync - speichert in Supabase und localStorage (Backup)
+async function syncToCloud(table, items, prevItems) {
+  try {
+    // Find deleted items
+    const prevIds = (prevItems || []).map(x => x.id);
+    const currentIds = items.map(x => x.id);
+    const deletedIds = prevIds.filter(id => !currentIds.includes(id));
+
+    // Delete removed items
+    for (const id of deletedIds) {
+      if (table === "therapists") await window.db.deleteTherapist(id);
+      else if (table === "patients") await window.db.deletePatient(id);
+      else if (table === "exercises") await window.db.deleteExercise(id);
+      else if (table === "plans") await window.db.deletePlan(id);
+      else if (table === "logs") await window.db.deleteLog(id);
+      else if (table === "groups") await window.db.deleteGroup(id);
+    }
+
+    // Upsert all current items
+    for (const item of items) {
+      if (table === "therapists") await window.db.upsertTherapist(item);
+      else if (table === "patients") await window.db.upsertPatient(item);
+      else if (table === "exercises") await window.db.upsertExercise(item);
+      else if (table === "plans") await window.db.upsertPlan(item);
+      else if (table === "logs") await window.db.upsertLog(item);
+      else if (table === "groups") await window.db.upsertGroup(item);
+    }
+  } catch (e) {
+    console.warn("Cloud sync failed (saved locally):", e);
+  }
+}
+
 function App() {
   const [mode, setMode] = useState(null);
   const [therapistId, setTherapistId] = useState(null);
@@ -170,30 +308,79 @@ function App() {
   const [therapists, setTherapists] = useState(SEED_THERAPISTS);
   const [plans, setPlans] = useState([]);
   const [logs, setLogs] = useState([]);
+  const [groups, setGroups] = useState([]);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     (async () => {
-      const ex = await load("qr_exercises"); if (ex) setExercises(ex);
-      const pa = await load("qr_patients"); if (pa) setPatients(pa);
-      const th = await load("qr_therapists"); if (th) setTherapists(th);
-      const pl = await load("qr_plans"); if (pl) setPlans(pl);
-      const lo = await load("qr_logs"); if (lo) setLogs(lo);
+      try {
+        // Try cloud first
+        const [ex, pa, th, pl, lo, gr] = await Promise.all([
+          window.db.getExercises(),
+          window.db.getPatients(),
+          window.db.getTherapists(),
+          window.db.getPlans(),
+          window.db.getLogs(),
+          window.db.getGroups().catch(() => [])
+        ]);
+        // If cloud has data, use it. Otherwise seed.
+        if (ex && ex.length > 0) setExercises(ex); else { setExercises(SEED_EXERCISES); for (const e of SEED_EXERCISES) await window.db.upsertExercise(e); }
+        if (pa && pa.length > 0) setPatients(pa); else { setPatients(SEED_PATIENTS); for (const p of SEED_PATIENTS) await window.db.upsertPatient(p); }
+        if (th && th.length > 0) setTherapists(th); else { setTherapists(SEED_THERAPISTS); for (const t of SEED_THERAPISTS) await window.db.upsertTherapist(t); }
+        setPlans(pl || []);
+        setLogs(lo || []);
+        setGroups(gr || []);
+      } catch (e) {
+        console.warn("Cloud load failed, using local:", e);
+        const ex = await load("qr_exercises"); if (ex) setExercises(ex);
+        const pa = await load("qr_patients"); if (pa) setPatients(pa);
+        const th = await load("qr_therapists"); if (th) setTherapists(th);
+        const pl = await load("qr_plans"); if (pl) setPlans(pl);
+        const lo = await load("qr_logs"); if (lo) setLogs(lo);
+      }
       setLoaded(true);
     })();
+    // Auto-refresh every 10 seconds so patient sees therapist's changes
+    const intv = setInterval(async () => {
+      try {
+        const [ex, pa, th, pl, lo, gr] = await Promise.all([
+          window.db.getExercises(),
+          window.db.getPatients(),
+          window.db.getTherapists(),
+          window.db.getPlans(),
+          window.db.getLogs(),
+          window.db.getGroups().catch(() => [])
+        ]);
+        if (ex) setExercises(ex);
+        if (pa) setPatients(pa);
+        if (th) setTherapists(th);
+        if (pl) setPlans(pl);
+        if (lo) setLogs(lo);
+        if (gr) setGroups(gr);
+      } catch {}
+    }, 10000);
+    return () => clearInterval(intv);
   }, []);
 
-  useEffect(() => { if (loaded) save("qr_exercises", exercises); }, [exercises, loaded]);
-  useEffect(() => { if (loaded) save("qr_patients", patients); }, [patients, loaded]);
-  useEffect(() => { if (loaded) save("qr_therapists", therapists); }, [therapists, loaded]);
-  useEffect(() => { if (loaded) save("qr_plans", plans); }, [plans, loaded]);
-  useEffect(() => { if (loaded) save("qr_logs", logs); }, [logs, loaded]);
+  const prevExercises = useRef([]);
+  const prevPatients = useRef([]);
+  const prevTherapists = useRef([]);
+  const prevPlans = useRef([]);
+  const prevLogs = useRef([]);
+
+  useEffect(() => { if (loaded) { save("qr_exercises", exercises); syncToCloud("exercises", exercises, prevExercises.current); prevExercises.current = exercises; } }, [exercises, loaded]);
+  useEffect(() => { if (loaded) { save("qr_patients", patients); syncToCloud("patients", patients, prevPatients.current); prevPatients.current = patients; } }, [patients, loaded]);
+  useEffect(() => { if (loaded) { save("qr_therapists", therapists); syncToCloud("therapists", therapists, prevTherapists.current); prevTherapists.current = therapists; } }, [therapists, loaded]);
+  useEffect(() => { if (loaded) { save("qr_plans", plans); syncToCloud("plans", plans, prevPlans.current); prevPlans.current = plans; } }, [plans, loaded]);
+  useEffect(() => { if (loaded) { save("qr_logs", logs); syncToCloud("logs", logs, prevLogs.current); prevLogs.current = logs; } }, [logs, loaded]);
+  const prevGroups = useRef([]);
+  useEffect(() => { if (loaded) { save("qr_groups", groups); syncToCloud("groups", groups, prevGroups.current); prevGroups.current = groups; } }, [groups, loaded]);
 
   if (!loaded) return (
     <div style={{ background: BG, height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontFamily: "'DM Sans',sans-serif" }}>Laden…</div>
   );
 
-  const shared = { exercises, setExercises, patients, setPatients, therapists, setTherapists, plans, setPlans, logs, setLogs };
+  const shared = { exercises, setExercises, patients, setPatients, therapists, setTherapists, plans, setPlans, logs, setLogs, groups, setGroups };
   const currentTherapist = therapists.find(t => t.id === therapistId);
 
   return (
@@ -317,15 +504,15 @@ function ModeCard({ icon, title, sub, onClick, accent }) {
   );
 }
 
-function TherapistApp({ onBack, exercises, setExercises, patients, setPatients, therapists, setTherapists, plans, setPlans, logs, currentTherapist }) {
+function TherapistApp({ onBack, exercises, setExercises, patients, setPatients, therapists, setTherapists, plans, setPlans, logs, currentTherapist, groups, setGroups }) {
   const [tab, setTab] = useState("pool");
   return (
     <div style={{ display: "flex", flexDirection: "column", minHeight: "100vh" }}>
       <TopBar onBack={onBack} title="Therapeuten-Dashboard" sub={currentTherapist ? currentTherapist.name + " · " + currentTherapist.role : ""} />
       <TabBar tabs={[{ id: "pool", label: "Übungspool" }, { id: "patients", label: "Patienten" }, { id: "plans", label: "Pläne" }, { id: "team", label: "Team" }]} active={tab} setActive={setTab} />
       <div style={{ flex: 1, padding: "24px 20px", maxWidth: 960, margin: "0 auto", width: "100%" }}>
-        {tab === "pool" && <ExercisePool exercises={exercises} setExercises={setExercises} />}
-        {tab === "patients" && <PatientManager patients={patients} setPatients={setPatients} logs={logs} plans={plans} />}
+        {tab === "pool" && <ExercisePool exercises={exercises} setExercises={setExercises} groups={groups} setGroups={setGroups} />}
+        {tab === "patients" && <PatientManager patients={patients} setPatients={setPatients} logs={logs} plans={plans} exercises={exercises} />}
         {tab === "plans" && <PlanBuilder exercises={exercises} patients={patients} plans={plans} setPlans={setPlans} />}
         {tab === "team" && <TeamManager therapists={therapists} setTherapists={setTherapists} />}
       </div>
@@ -336,24 +523,35 @@ function TherapistApp({ onBack, exercises, setExercises, patients, setPatients, 
 // ── Team Manager ───────────────────────────────────────────────────────────
 function TeamManager({ therapists, setTherapists }) {
   const [adding, setAdding] = useState(false);
+  const [editId, setEditId] = useState(null);
   const [form, setForm] = useState({ name: "", role: "", pin: "" });
   const [pinError, setPinError] = useState("");
 
-  function addTherapist() {
+  function saveTherapist() {
     if (!form.name.trim()) return;
     if (!/^\d{4}$/.test(form.pin)) { setPinError("PIN muss genau 4 Ziffern sein"); return; }
-    if (therapists.find(t => t.pin === form.pin)) { setPinError("Dieser PIN ist bereits vergeben"); return; }
-    setTherapists(prev => [...prev, { ...form, id: "t" + uid() }]);
+    if (therapists.find(t => t.pin === form.pin && t.id !== editId)) { setPinError("Dieser PIN ist bereits vergeben"); return; }
+    if (editId) {
+      setTherapists(prev => prev.map(t => t.id === editId ? { ...t, ...form } : t));
+      setEditId(null);
+    } else {
+      setTherapists(prev => [...prev, { ...form, id: "t" + uid() }]);
+    }
     setForm({ name: "", role: "", pin: "" });
     setPinError(""); setAdding(false);
   }
 
+  function startEdit(t) {
+    setForm({ name: t.name, role: t.role || "", pin: t.pin });
+    setEditId(t.id); setAdding(true); setPinError("");
+  }
+
   return (
     <div>
-      <SectionHeader title="Team" count={therapists.length} action={<Btn accent onClick={() => setAdding(true)}>+ Therapeut</Btn>} />
+      <SectionHeader title="Team" count={therapists.length} action={<Btn accent onClick={() => { setAdding(true); setEditId(null); setForm({ name: "", role: "", pin: "" }); }}>+ Therapeut</Btn>} />
       {adding && (
         <Card style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: ACCENT, marginBottom: 12 }}>Neuer Therapeut</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: ACCENT, marginBottom: 12 }}>{editId ? "Therapeut bearbeiten" : "Neuer Therapeut"}</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Input placeholder="Name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
             <Input placeholder="Rolle (z.B. Physiotherapeut)" value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value }))} />
@@ -364,8 +562,8 @@ function TeamManager({ therapists, setTherapists }) {
             {pinError && <div style={{ fontSize: 11, color: "#d94f4f", marginTop: 4 }}>{pinError}</div>}
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            <Btn accent onClick={addTherapist}>Speichern</Btn>
-            <Btn onClick={() => { setAdding(false); setPinError(""); }}>Abbrechen</Btn>
+            <Btn accent onClick={saveTherapist}>Speichern</Btn>
+            <Btn onClick={() => { setAdding(false); setEditId(null); setPinError(""); }}>Abbrechen</Btn>
           </div>
         </Card>
       )}
@@ -382,12 +580,13 @@ function TeamManager({ therapists, setTherapists }) {
                   {t.role && <div style={{ fontSize: 12, color: GRAY }}>{t.role}</div>}
                 </div>
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <div style={{ textAlign: "right" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ textAlign: "right", marginRight: 4 }}>
                   <div style={{ fontSize: 11, color: GRAY }}>PIN</div>
                   <div style={{ fontWeight: 800, color: "white", letterSpacing: 4, fontSize: 13 }}>{t.pin}</div>
                 </div>
-                {therapists.length > 1 && <SmallBtn onClick={() => setTherapists(prev => prev.filter(x => x.id !== t.id))}>✕</SmallBtn>}
+                <SmallBtn onClick={() => startEdit(t)}>✎</SmallBtn>
+                {therapists.length > 1 && <SmallBtn onClick={() => { if(window.confirm("Therapeut wirklich löschen?")) setTherapists(prev => prev.filter(x => x.id !== t.id)); }}>✕</SmallBtn>}
               </div>
             </div>
           </Card>
@@ -397,26 +596,51 @@ function TeamManager({ therapists, setTherapists }) {
   );
 }
 
-function ExercisePool({ exercises, setExercises }) {
+function ExercisePool({ exercises, setExercises, groups, setGroups }) {
+  const [subtab, setSubtab] = useState("single");
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+        <button onClick={() => setSubtab("single")} style={{ padding: "8px 16px", borderRadius: 20, border: `1px solid ${subtab === "single" ? ACCENT : BORDER}`, background: subtab === "single" ? ACCENT : CARD, color: subtab === "single" ? "#000" : "white", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Einzelübungen</button>
+        <button onClick={() => setSubtab("groups")} style={{ padding: "8px 16px", borderRadius: 20, border: `1px solid ${subtab === "groups" ? ACCENT : BORDER}`, background: subtab === "groups" ? ACCENT : CARD, color: subtab === "groups" ? "#000" : "white", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Gruppen</button>
+      </div>
+      {subtab === "single" && <SingleExercises exercises={exercises} setExercises={setExercises} />}
+      {subtab === "groups" && <GroupManager groups={groups} setGroups={setGroups} exercises={exercises} />}
+    </div>
+  );
+}
+
+function SingleExercises({ exercises, setExercises }) {
   const [adding, setAdding] = useState(false);
+  const [editId, setEditId] = useState(null);
   const [filter, setFilter] = useState("");
   const [form, setForm] = useState({ name: "", category: CATEGORIES[0], videoUrl: "", description: "" });
   const filtered = exercises.filter(e => e.name.toLowerCase().includes(filter.toLowerCase()) || e.category.toLowerCase().includes(filter.toLowerCase()));
 
-  function addExercise() {
+  function saveExercise() {
     if (!form.name.trim()) return;
-    setExercises(prev => [...prev, { ...form, id: "ex" + uid() }]);
+    if (editId) {
+      setExercises(prev => prev.map(e => e.id === editId ? { ...e, ...form } : e));
+      setEditId(null);
+    } else {
+      setExercises(prev => [...prev, { ...form, id: "ex" + uid() }]);
+    }
     setForm({ name: "", category: CATEGORIES[0], videoUrl: "", description: "" });
     setAdding(false);
   }
 
+  function startEdit(ex) {
+    setForm({ name: ex.name, category: ex.category, videoUrl: ex.videoUrl || "", description: ex.description || "" });
+    setEditId(ex.id); setAdding(true);
+  }
+
   return (
     <div>
-      <SectionHeader title="Übungspool" count={exercises.length} action={<Btn accent onClick={() => setAdding(true)}>+ Übung</Btn>} />
+      <SectionHeader title="Einzelübungen" count={exercises.length} action={<Btn accent onClick={() => { setAdding(true); setEditId(null); setForm({ name: "", category: CATEGORIES[0], videoUrl: "", description: "" }); }}>+ Übung</Btn>} />
       <Input placeholder="Suchen…" value={filter} onChange={e => setFilter(e.target.value)} style={{ marginBottom: 16 }} />
       {adding && (
         <Card style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: ACCENT, marginBottom: 12 }}>Neue Übung</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: ACCENT, marginBottom: 12 }}>{editId ? "Übung bearbeiten" : "Neue Übung"}</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Input placeholder="Name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
             <Select value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}>
@@ -426,19 +650,124 @@ function ExercisePool({ exercises, setExercises }) {
           <Input placeholder="Video-URL (YouTube Embed, Vimeo, MP4…)" value={form.videoUrl} onChange={e => setForm(f => ({ ...f, videoUrl: e.target.value }))} style={{ marginTop: 10 }} />
           <TextArea placeholder="Beschreibung / Coaching-Cues" value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-            <Btn accent onClick={addExercise}>Speichern</Btn>
-            <Btn onClick={() => setAdding(false)}>Abbrechen</Btn>
+            <Btn accent onClick={saveExercise}>Speichern</Btn>
+            <Btn onClick={() => { setAdding(false); setEditId(null); }}>Abbrechen</Btn>
           </div>
         </Card>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 12 }}>
-        {filtered.map(ex => <ExCard key={ex.id} ex={ex} onDelete={() => setExercises(prev => prev.filter(e => e.id !== ex.id))} />)}
+        {filtered.map(ex => <ExCard key={ex.id} ex={ex}
+          onEdit={() => startEdit(ex)}
+          onDelete={() => { if(window.confirm("Übung wirklich löschen?")) setExercises(prev => prev.filter(e => e.id !== ex.id)); }} />)}
       </div>
     </div>
   );
 }
 
-function ExCard({ ex, onDelete, selectable, selected, onSelect, phaseColor }) {
+function GroupManager({ groups, setGroups, exercises }) {
+  const [adding, setAdding] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [name, setName] = useState("");
+  const [expandedId, setExpandedId] = useState(null);
+
+  function saveGroup() {
+    if (!name.trim()) return;
+    if (editId) {
+      setGroups(prev => prev.map(g => g.id === editId ? { ...g, name } : g));
+      setEditId(null);
+    } else {
+      const newG = { id: "g" + uid(), name, levels: [] };
+      setGroups(prev => [...prev, newG]);
+      setExpandedId(newG.id);
+    }
+    setName(""); setAdding(false);
+  }
+
+  function addLevel(gid) {
+    setGroups(prev => prev.map(g => {
+      if (g.id !== gid) return g;
+      const next = (g.levels || []).length + 1;
+      return { ...g, levels: [...(g.levels || []), { id: "l" + uid(), label: "Level " + next, exerciseId: "" }] };
+    }));
+  }
+  function updateLevel(gid, lid, field, val) {
+    setGroups(prev => prev.map(g => g.id !== gid ? g : { ...g, levels: g.levels.map(l => l.id === lid ? { ...l, [field]: val } : l) }));
+  }
+  function deleteLevel(gid, lid) {
+    setGroups(prev => prev.map(g => g.id !== gid ? g : { ...g, levels: g.levels.filter(l => l.id !== lid) }));
+  }
+  function moveLevel(gid, lid, dir) {
+    setGroups(prev => prev.map(g => {
+      if (g.id !== gid) return g;
+      const idx = g.levels.findIndex(l => l.id === lid);
+      const newIdx = idx + dir;
+      if (newIdx < 0 || newIdx >= g.levels.length) return g;
+      const arr = [...g.levels];
+      [arr[idx], arr[newIdx]] = [arr[newIdx], arr[idx]];
+      return { ...g, levels: arr };
+    }));
+  }
+
+  return (
+    <div>
+      <SectionHeader title="Gruppen" count={groups.length} action={<Btn accent onClick={() => { setAdding(true); setEditId(null); setName(""); }}>+ Gruppe</Btn>} />
+      <div style={{ fontSize: 12, color: GRAY, marginBottom: 16, lineHeight: 1.6 }}>Organisiere Übungen in Progressions-Gruppen (z.B. "Kniedominant" mit Level 1-5). Nur für dich sichtbar — der Patient sieht nur die ausgewählte Übung.</div>
+      {adding && (
+        <Card style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: ACCENT, marginBottom: 12 }}>{editId ? "Gruppe umbenennen" : "Neue Gruppe"}</div>
+          <Input placeholder="Name (z.B. Kniedominant)" value={name} onChange={e => setName(e.target.value)} />
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <Btn accent onClick={saveGroup}>Speichern</Btn>
+            <Btn onClick={() => { setAdding(false); setEditId(null); }}>Abbrechen</Btn>
+          </div>
+        </Card>
+      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {groups.map(g => {
+          const isOpen = expandedId === g.id;
+          return (
+            <Card key={g.id}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => setExpandedId(isOpen ? null : g.id)}>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 15 }}>{g.name}</div>
+                  <div style={{ fontSize: 11, color: GRAY, marginTop: 2 }}>{(g.levels || []).length} Level</div>
+                </div>
+                <div style={{ display: "flex", gap: 6 }} onClick={e => e.stopPropagation()}>
+                  <SmallBtn onClick={() => { setName(g.name); setEditId(g.id); setAdding(true); }}>✎</SmallBtn>
+                  <SmallBtn onClick={() => { if(window.confirm("Gruppe wirklich löschen?")) setGroups(prev => prev.filter(x => x.id !== g.id)); }}>✕</SmallBtn>
+                  <SmallBtn>{isOpen ? "▲" : "▼"}</SmallBtn>
+                </div>
+              </div>
+              {isOpen && (
+                <div style={{ marginTop: 14, borderTop: `1px solid ${BORDER}`, paddingTop: 14 }}>
+                  {(g.levels || []).map((lvl, idx) => {
+                    const ex = exercises.find(e => e.id === lvl.exerciseId);
+                    return (
+                      <div key={lvl.id} style={{ background: LIGHTGRAY, borderRadius: 8, padding: 10, marginBottom: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <Input value={lvl.label} onChange={e => updateLevel(g.id, lvl.id, "label", e.target.value)} style={{ width: 110 }} />
+                        <Select value={lvl.exerciseId} onChange={e => updateLevel(g.id, lvl.id, "exerciseId", e.target.value)} style={{ flex: 1, minWidth: 160 }}>
+                          <option value="">— Übung wählen —</option>
+                          {exercises.map(ex => <option key={ex.id} value={ex.id}>{ex.name}</option>)}
+                        </Select>
+                        <SmallBtn onClick={() => moveLevel(g.id, lvl.id, -1)} title="Nach oben">↑</SmallBtn>
+                        <SmallBtn onClick={() => moveLevel(g.id, lvl.id, 1)} title="Nach unten">↓</SmallBtn>
+                        <SmallBtn onClick={() => deleteLevel(g.id, lvl.id)}>✕</SmallBtn>
+                      </div>
+                    );
+                  })}
+                  <Btn accent onClick={() => addLevel(g.id)} style={{ marginTop: 4 }}>+ Level hinzufügen</Btn>
+                </div>
+              )}
+            </Card>
+          );
+        })}
+        {groups.length === 0 && <div style={{ color: GRAY, fontSize: 12, textAlign: "center", padding: 30 }}>Noch keine Gruppen angelegt. Tippe auf "+ Gruppe" um zu starten.</div>}
+      </div>
+    </div>
+  );
+}
+
+function ExCard({ ex, onDelete, onEdit, selectable, selected, onSelect, phaseColor }) {
   const [open, setOpen] = useState(false);
   return (
     <Card style={{ cursor: selectable ? "pointer" : "default", border: selected ? `1px solid ${phaseColor || ACCENT}` : `1px solid ${BORDER}`, position: "relative" }}
@@ -449,7 +778,12 @@ function ExCard({ ex, onDelete, selectable, selected, onSelect, phaseColor }) {
           <div style={{ fontWeight: 600, fontSize: 14 }}>{ex.name}</div>
           <Tag>{ex.category}</Tag>
         </div>
-        {!selectable && onDelete && <SmallBtn onClick={onDelete}>✕</SmallBtn>}
+        {!selectable && (
+          <div style={{ display: "flex", gap: 4 }}>
+            {onEdit && <SmallBtn onClick={e => { e.stopPropagation(); onEdit(); }}>✎</SmallBtn>}
+            {onDelete && <SmallBtn onClick={e => { e.stopPropagation(); onDelete(); }}>✕</SmallBtn>}
+          </div>
+        )}
         {selected && <div style={{ color: phaseColor || ACCENT, fontSize: 16, fontWeight: 800 }}>✓</div>}
       </div>
       {ex.description && <div style={{ fontSize: 11, color: GRAY, marginTop: 5, lineHeight: 1.5 }}>{ex.description}</div>}
@@ -468,26 +802,44 @@ function ExCard({ ex, onDelete, selectable, selected, onSelect, phaseColor }) {
   );
 }
 
-function PatientManager({ patients, setPatients, logs, plans }) {
+function PatientManager({ patients, setPatients, logs, plans, exercises }) {
   const [form, setForm] = useState({ name: "", dob: "", diagnosis: "", pin: "" });
   const [adding, setAdding] = useState(false);
+  const [editId, setEditId] = useState(null);
   const [pinError, setPinError] = useState("");
+  const [expandedId, setExpandedId] = useState(null);
 
-  function addPatient() {
+  function savePatient() {
     if (!form.name.trim()) return;
     if (!/^\d{4}$/.test(form.pin)) { setPinError("PIN muss genau 4 Ziffern sein"); return; }
-    if (patients.find(p => p.pin === form.pin)) { setPinError("Dieser PIN ist bereits vergeben"); return; }
-    setPatients(prev => [...prev, { ...form, id: "p" + uid() }]);
+    if (patients.find(p => p.pin === form.pin && p.id !== editId)) { setPinError("Dieser PIN ist bereits vergeben"); return; }
+    if (editId) {
+      setPatients(prev => prev.map(p => p.id === editId ? { ...p, ...form } : p));
+      setEditId(null);
+    } else {
+      setPatients(prev => [...prev, { ...form, id: "p" + uid() }]);
+    }
     setForm({ name: "", dob: "", diagnosis: "", pin: "" });
     setPinError(""); setAdding(false);
   }
 
+  function startEdit(p) {
+    setForm({ name: p.name, dob: p.dob || "", diagnosis: p.diagnosis || "", pin: p.pin });
+    setEditId(p.id); setAdding(true); setPinError("");
+  }
+
+  function deletePatient(id) {
+    if (window.confirm("Patient wirklich löschen? Alle Logs werden ebenfalls gelöscht.")) {
+      setPatients(prev => prev.filter(p => p.id !== id));
+    }
+  }
+
   return (
     <div>
-      <SectionHeader title="Patienten" count={patients.length} action={<Btn accent onClick={() => setAdding(true)}>+ Patient</Btn>} />
+      <SectionHeader title="Patienten" count={patients.length} action={<Btn accent onClick={() => { setAdding(true); setEditId(null); setForm({ name: "", dob: "", diagnosis: "", pin: "" }); }}>+ Patient</Btn>} />
       {adding && (
         <Card style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: ACCENT, marginBottom: 12 }}>Neuer Patient</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: ACCENT, marginBottom: 12 }}>{editId ? "Patient bearbeiten" : "Neuer Patient"}</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Input placeholder="Name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
             <Input type="date" value={form.dob} onChange={e => setForm(f => ({ ...f, dob: e.target.value }))} />
@@ -499,29 +851,58 @@ function PatientManager({ patients, setPatients, logs, plans }) {
             {pinError && <div style={{ fontSize: 11, color: "#d94f4f", marginTop: 4 }}>{pinError}</div>}
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            <Btn accent onClick={addPatient}>Speichern</Btn>
-            <Btn onClick={() => { setAdding(false); setPinError(""); }}>Abbrechen</Btn>
+            <Btn accent onClick={savePatient}>Speichern</Btn>
+            <Btn onClick={() => { setAdding(false); setEditId(null); setPinError(""); }}>Abbrechen</Btn>
           </div>
         </Card>
       )}
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {patients.map(p => {
-          const pLogs = logs.filter(l => l.patientId === p.id);
+          const pLogs = logs.filter(l => l.patientId === p.id).sort((a, b) => (b.ts || 0) - (a.ts || 0));
           const pPlans = plans.filter(pl => pl.patientId === p.id);
+          const isOpen = expandedId === p.id;
           return (
             <Card key={p.id}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, cursor: "pointer" }} onClick={() => setExpandedId(isOpen ? null : p.id)}>
                 <div>
                   <div style={{ fontWeight: 600 }}>{p.name}</div>
                   {p.dob && <div style={{ fontSize: 12, color: GRAY }}>*{formatDate(p.dob)}</div>}
                   {p.diagnosis && <div style={{ fontSize: 12, color: GRAY }}>{p.diagnosis}</div>}
                 </div>
-                <div style={{ textAlign: "right" }}>
-                  <div style={{ fontSize: 12, color: GRAY }}>{pPlans.length} Plan(e)</div>
-                  <div style={{ fontSize: 12, color: ACCENT }}>{pLogs.length} Sets dokumentiert</div>
-                  <div style={{ marginTop: 4, fontSize: 11, color: GRAY }}>PIN: <span style={{ fontWeight: 800, color: "white", letterSpacing: 4, fontSize: 13 }}>{p.pin || "—"}</span></div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }} onClick={e => e.stopPropagation()}>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: 12, color: GRAY }}>{pPlans.length} Plan(e) · {pLogs.length} Sets</div>
+                    <div style={{ fontSize: 11, color: GRAY }}>PIN: <span style={{ fontWeight: 800, color: "white", letterSpacing: 4 }}>{p.pin || "—"}</span></div>
+                  </div>
+                  <SmallBtn onClick={() => startEdit(p)}>✎</SmallBtn>
+                  <SmallBtn onClick={() => deletePatient(p.id)}>✕</SmallBtn>
+                  <SmallBtn onClick={() => setExpandedId(isOpen ? null : p.id)}>{isOpen ? "▲" : "▼"}</SmallBtn>
                 </div>
               </div>
+              {isOpen && (
+                <div style={{ marginTop: 14, borderTop: `1px solid ${BORDER}`, paddingTop: 14 }}>
+                  <div style={{ fontSize: 11, color: GRAY, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 }}>Letzte Sets ({pLogs.length})</div>
+                  {pLogs.length === 0 && <div style={{ fontSize: 12, color: GRAY, fontStyle: "italic" }}>Noch keine Sets dokumentiert.</div>}
+                  {pLogs.slice(0, 30).map(l => {
+                    const ex = exercises.find(e => e.id === l.exerciseId);
+                    const valTxt = l.mode === "time" ? (l.duration ? l.duration + " Sek." : "—") : (l.reps ? l.reps + " Wdh." : "—");
+                    return (
+                      <div key={l.id} style={{ background: LIGHTGRAY, borderRadius: 8, padding: 10, marginBottom: 6, fontSize: 12 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
+                          <span style={{ fontWeight: 600 }}>{ex?.name || "Übung"}</span>
+                          <span style={{ color: GRAY, fontSize: 11 }}>{formatDate(l.date)}</span>
+                        </div>
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 4, alignItems: "center" }}>
+                          <span style={{ color: "white" }}>{valTxt}</span>
+                          {l.weight && <span style={{ color: GRAY }}>{l.weight} kg</span>}
+                          {l.rpe && <span style={{ color: rpeColor(l.rpe), fontWeight: 700 }}>RPE {l.rpe}</span>}
+                        </div>
+                        {l.note && <div style={{ fontSize: 11, color: GRAY, marginTop: 4, fontStyle: "italic", lineHeight: 1.5 }}>{l.note}</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </Card>
           );
         })}
@@ -562,7 +943,7 @@ function PlanBuilder({ exercises, patients, plans, setPlans }) {
       if (p.id !== phaseId) return p;
       const exists = p.items.find(i => i.exerciseId === exId);
       if (exists) return { ...p, items: p.items.filter(i => i.exerciseId !== exId) };
-      return { ...p, items: [...p.items, { exerciseId: exId, sets: 3, reps: 10, frequency: "3x/Woche" }] };
+      return { ...p, items: [...p.items, { exerciseId: exId, sets: 3, mode: "reps", reps: "8-12", duration: "30", frequency: "3x/Woche" }] };
     })}));
   }
   function updateItem(phaseId, exId, field, val) {
@@ -627,7 +1008,17 @@ function PlanBuilder({ exercises, patients, plans, setPlans }) {
                       <div key={item.exerciseId} style={{ background: LIGHTGRAY, borderRadius: 8, padding: "10px 14px", marginBottom: 6, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", borderLeft: `3px solid ${activePhase.color}` }}>
                         <div style={{ fontSize: 13, fontWeight: 600, flex: 1, minWidth: 120 }}>{ex?.name}</div>
                         <label style={{ fontSize: 11, color: GRAY }}>Sätze<br /><SmallInput type="number" value={item.sets} onChange={e => updateItem(activePhase.id, item.exerciseId, "sets", e.target.value)} /></label>
-                        <label style={{ fontSize: 11, color: GRAY }}>Wdh.<br /><SmallInput type="number" value={item.reps} onChange={e => updateItem(activePhase.id, item.exerciseId, "reps", e.target.value)} /></label>
+                        <label style={{ fontSize: 11, color: GRAY }}>Modus<br />
+                          <Select value={item.mode || "reps"} onChange={e => updateItem(activePhase.id, item.exerciseId, "mode", e.target.value)} style={{ width: 90, fontSize: 11, padding: "4px 8px" }}>
+                            <option value="reps">Wdh.</option>
+                            <option value="time">Zeit</option>
+                          </Select>
+                        </label>
+                        {(item.mode || "reps") === "reps" ? (
+                          <label style={{ fontSize: 11, color: GRAY }}>Wdh. (z.B. 8-12)<br /><SmallInput value={item.reps || ""} onChange={e => updateItem(activePhase.id, item.exerciseId, "reps", e.target.value)} style={{ width: 80 }} /></label>
+                        ) : (
+                          <label style={{ fontSize: 11, color: GRAY }}>Zeit (Sek.)<br /><SmallInput value={item.duration || ""} onChange={e => updateItem(activePhase.id, item.exerciseId, "duration", e.target.value)} style={{ width: 80 }} /></label>
+                        )}
                         <label style={{ fontSize: 11, color: GRAY }}>Frequenz<br /><SmallInput value={item.frequency} onChange={e => updateItem(activePhase.id, item.exerciseId, "frequency", e.target.value)} style={{ width: 90 }} /></label>
                         <SmallBtn onClick={() => removeItem(activePhase.id, item.exerciseId)}>✕</SmallBtn>
                       </div>
@@ -743,8 +1134,29 @@ function PatientDashboard({ patient, myPlans, exercises, logs, setLogs, onBack }
   const weekStart = new Date(); weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
   const weekLogs = logs.filter(l => new Date(l.date) >= weekStart);
 
-  function logSet(planId, phaseId, exerciseId) {
-    setLogs(prev => [...prev, { id: "log" + uid(), planId, phaseId, exerciseId, patientId: patient.id, date: today(), ts: Date.now() }]);
+  const [logModal, setLogModal] = useState(null); // { planId, phaseId, exerciseId, item }
+
+  function openLog(planId, phaseId, exerciseId, item) {
+    setLogModal({ planId, phaseId, exerciseId, item });
+  }
+  function saveSetLog(data) {
+    if (!logModal) return;
+    setLogs(prev => [...prev, {
+      id: "log" + uid(),
+      planId: logModal.planId,
+      phaseId: logModal.phaseId,
+      exerciseId: logModal.exerciseId,
+      patientId: patient.id,
+      date: today(),
+      ts: Date.now(),
+      reps: data.reps,
+      duration: data.duration,
+      weight: data.weight,
+      rpe: data.rpe,
+      note: data.note,
+      mode: data.mode
+    }]);
+    setLogModal(null);
   }
   function undoLast(planId, exerciseId) {
     setLogs(prev => {
@@ -791,7 +1203,7 @@ function PatientDashboard({ patient, myPlans, exercises, logs, setLogs, onBack }
                         if (!ex) return null;
                         const doneSets = logs.filter(l => l.planId === plan.id && l.exerciseId === item.exerciseId && l.date === today()).length;
                         return <ExerciseLogCard key={item.exerciseId} ex={ex} item={item} doneSets={doneSets} phaseColor={phase.color}
-                          onLog={() => logSet(plan.id, phase.id, item.exerciseId)} onUndo={() => undoLast(plan.id, item.exerciseId)} />;
+                          onLog={() => openLog(plan.id, phase.id, item.exerciseId, item)} onUndo={() => undoLast(plan.id, item.exerciseId)} />;
                       })}
                     </div>
                   </div>
@@ -804,6 +1216,7 @@ function PatientDashboard({ patient, myPlans, exercises, logs, setLogs, onBack }
         )}
         {tab === "log" && <LogHistory logs={logs} exercises={exercises} />}
       </div>
+      {logModal && <SetLogModal item={logModal.item} ex={exercises.find(e => e.id === logModal.exerciseId)} onSave={saveSetLog} onCancel={() => setLogModal(null)} />}
     </div>
   );
 }
@@ -821,7 +1234,7 @@ function ExerciseLogCard({ ex, item, doneSets, onLog, onUndo, phaseColor }) {
           <div style={{ fontWeight: 700, fontSize: 16, display: "flex", alignItems: "center", gap: 8 }}>
             {done && <span style={{ color }}>✓</span>}{ex.name}
           </div>
-          <div style={{ fontSize: 12, color: GRAY, marginTop: 3 }}>{item.sets} Sätze · {item.reps} Wdh. · {item.frequency}</div>
+          <div style={{ fontSize: 12, color: GRAY, marginTop: 3 }}>{item.sets} Sätze · {(item.mode || "reps") === "time" ? `${item.duration || "—"} Sek.` : `${item.reps || "—"} Wdh.`} · {item.frequency}</div>
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           {ex.videoUrl && <SmallBtn onClick={() => setVideoOpen(o => !o)}>{videoOpen ? "▲" : "▶"}</SmallBtn>}
@@ -854,30 +1267,51 @@ function LogHistory({ logs, exercises }) {
   const dates = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
   return (
     <div>
-      <SectionHeader title="Trainingsverlauf" count={`${logs.length} Einheiten`} />
+      <SectionHeader title="Trainingsverlauf" count={`${logs.length} Sets`} />
       {dates.length === 0 && <div style={{ color: GRAY, fontSize: 13, textAlign: "center", marginTop: 40 }}>Noch keine Einheiten dokumentiert.</div>}
       {dates.map(date => {
-        const exMap = {};
-        grouped[date].forEach(l => { if (!exMap[l.exerciseId]) exMap[l.exerciseId] = 0; exMap[l.exerciseId]++; });
+        const exGroups = {};
+        grouped[date].forEach(l => { if (!exGroups[l.exerciseId]) exGroups[l.exerciseId] = []; exGroups[l.exerciseId].push(l); });
         return (
-          <div key={date} style={{ marginBottom: 16 }}>
+          <div key={date} style={{ marginBottom: 18 }}>
             <div style={{ fontSize: 11, letterSpacing: 2, textTransform: "uppercase", color: GRAY, marginBottom: 8 }}>{formatDate(date)}</div>
-            <Card>
-              {Object.entries(exMap).map(([exId, count], i, arr) => {
-                const ex = exercises.find(e => e.id === exId);
-                return (
-                  <div key={exId} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: i < arr.length - 1 ? `1px solid ${BORDER}` : "none" }}>
-                    <span style={{ fontSize: 13 }}>{ex?.name || "Übung"}</span>
-                    <span style={{ fontSize: 13, color: ACCENT, fontWeight: 700 }}>{count} Set{count > 1 ? "s" : ""}</span>
+            {Object.entries(exGroups).map(([exId, sets]) => {
+              const ex = exercises.find(e => e.id === exId);
+              return (
+                <Card key={exId} style={{ marginBottom: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                    <span style={{ fontWeight: 700, fontSize: 14 }}>{ex?.name || "Übung"}</span>
+                    <span style={{ fontSize: 12, color: ACCENT, fontWeight: 700 }}>{sets.length} Set{sets.length > 1 ? "s" : ""}</span>
                   </div>
-                );
-              })}
-            </Card>
+                  {sets.map((s, i) => {
+                    const valTxt = s.mode === "time" ? (s.duration ? s.duration + " Sek." : "—") : (s.reps ? s.reps + " Wdh." : "—");
+                    return (
+                      <div key={s.id} style={{ borderTop: i === 0 ? "none" : `1px solid ${BORDER}`, paddingTop: i === 0 ? 0 : 8, marginTop: i === 0 ? 0 : 8 }}>
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, alignItems: "center" }}>
+                          <span style={{ color: GRAY, fontSize: 11 }}>Set {i + 1}</span>
+                          <span style={{ color: "white", fontWeight: 600 }}>{valTxt}</span>
+                          {s.weight && <span style={{ color: GRAY }}>{s.weight} kg</span>}
+                          {s.rpe && <span style={{ color: rpeColor(s.rpe), fontWeight: 700 }}>RPE {s.rpe}</span>}
+                        </div>
+                        {s.note && <div style={{ fontSize: 11, color: GRAY, marginTop: 4, fontStyle: "italic", lineHeight: 1.5 }}>{s.note}</div>}
+                      </div>
+                    );
+                  })}
+                </Card>
+              );
+            })}
           </div>
         );
       })}
     </div>
   );
+}
+
+function rpeColor(rpe) {
+  if (rpe <= 3) return "#7EC8E3";
+  if (rpe <= 6) return ACCENT;
+  if (rpe <= 8) return "#F5C842";
+  return "#E8A87C";
 }
 
 function TopBar({ onBack, title, sub }) {
@@ -959,6 +1393,69 @@ function Select({ value, onChange, children }) {
     style={{ background: LIGHTGRAY, border: `1px solid ${BORDER}`, color: "white", borderRadius: 8, padding: "8px 12px", fontSize: 13, width: "100%", outline: "none" }}>{children}</select>;
 }
 
+
+
+function SetLogModal({ item, ex, onSave, onCancel }) {
+  const mode = item?.mode || "reps";
+  const [reps, setReps] = useState("");
+  const [duration, setDuration] = useState("");
+  const [weight, setWeight] = useState("");
+  const [rpe, setRpe] = useState(7);
+  const [note, setNote] = useState("");
+
+  function handleSave() {
+    onSave({ mode, reps, duration, weight, rpe, note });
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.8)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 20 }} onClick={onCancel}>
+      <div onClick={e => e.stopPropagation()} style={{ background: CARD, borderRadius: 16, padding: 24, maxWidth: 440, width: "100%", border: `1px solid ${BORDER}`, maxHeight: "90vh", overflowY: "auto" }}>
+        <div style={{ fontSize: 11, color: GRAY, letterSpacing: 2, textTransform: "uppercase", marginBottom: 4 }}>Set dokumentieren</div>
+        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4, color: "white" }}>{ex?.name || "Übung"}</div>
+        <div style={{ fontSize: 12, color: GRAY, marginBottom: 18 }}>Vorgabe: {mode === "time" ? `${item?.duration || "—"} Sek.` : `${item?.reps || "—"} Wdh.`}</div>
+
+        {mode === "reps" ? (
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 11, color: GRAY, marginBottom: 6, letterSpacing: 1, textTransform: "uppercase" }}>Wiederholungen</div>
+            <Input type="number" placeholder="z.B. 12" value={reps} onChange={e => setReps(e.target.value)} />
+          </div>
+        ) : (
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 11, color: GRAY, marginBottom: 6, letterSpacing: 1, textTransform: "uppercase" }}>Zeit (Sekunden)</div>
+            <Input type="number" placeholder="z.B. 45" value={duration} onChange={e => setDuration(e.target.value)} />
+          </div>
+        )}
+
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: GRAY, marginBottom: 6, letterSpacing: 1, textTransform: "uppercase" }}>Gewicht (kg) — optional</div>
+          <Input type="number" placeholder="z.B. 20" value={weight} onChange={e => setWeight(e.target.value)} />
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: GRAY, marginBottom: 6, letterSpacing: 1, textTransform: "uppercase", display: "flex", justifyContent: "space-between" }}>
+            <span>Anstrengung (RPE)</span>
+            <span style={{ color: ACCENT, fontWeight: 700, fontSize: 14 }}>{rpe} / 10</span>
+          </div>
+          <input type="range" min="1" max="10" value={rpe} onChange={e => setRpe(parseInt(e.target.value))}
+            style={{ width: "100%", accentColor: ACCENT, height: 6 }} />
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: GRAY, marginTop: 4 }}>
+            <span>1 = leicht</span><span>10 = maximal</span>
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 11, color: GRAY, marginBottom: 6, letterSpacing: 1, textTransform: "uppercase" }}>Notiz — optional</div>
+          <TextArea placeholder="Wie hat es sich angefühlt? Hat etwas gezogen? …" value={note} onChange={e => setNote(e.target.value)} />
+        </div>
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <Btn accent onClick={handleSave} style={{ flex: 1 }}>Set speichern</Btn>
+          <Btn onClick={onCancel}>Abbrechen</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
 
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<App />);
